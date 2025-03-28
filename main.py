@@ -413,7 +413,9 @@ def process_text_input():
     parsed_data = json.loads(clean_json(parse_output.raw))
 
     # Save initial parsed output
-    with open("C:/results/parsed_data.txt", "w") as file:
+    import os
+    os.makedirs("results", exist_ok=True)
+    with open("results/parsed_data.txt", "w") as file:
         json.dump(parsed_data, file, indent=4)
 
     # Iteration and validation loop
@@ -422,7 +424,7 @@ def process_text_input():
     while iteration < max_iterations:
         validation = hard_validate(parsed_data)
         print("\n[DEBUG] Validation Result (After Parser):")
-        with open("C:/results/validation_data.txt", "w") as file:
+        with open("results/validation_data.txt", "w") as file:
             json.dump(validation.data, file, indent=4)
         print(json.dumps(validation.data, indent=2))
 
