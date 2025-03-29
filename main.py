@@ -391,11 +391,7 @@ def process_po_from_gdrive():
         if not file_id:
             return jsonify({"error": "Missing 'file_id' in request"}), 400
 
-        # Format Google Drive download URL
-        google_drive_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-
-        # Download the PDF from Google Drive
-        pdf_path = download_pdf_from_google_drive(google_drive_url)
+        pdf_path = download_pdf_from_google_drive(file_id)
 
         # Extract raw text from the downloaded PDF
         raw_text = extract_text_from_pdf(pdf_path)
