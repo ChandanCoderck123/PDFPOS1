@@ -337,36 +337,85 @@ def clean_json(raw_text):
     cleaned = re.sub(r'(\d),(\d{3})(\.\d+)?', r'\1\2\3', cleaned)
     return cleaned
 
+import requests
+
+def get_confirm_token(response):
+    # Google sometimes requires a confirmation token for large or flagged files
+    for key, value in response.cookies.items():
+        if key.startswith('download_warning'):
+            return value
+    return None
+
+def download_pdf_from_google_drive(file_id, save_path="temp_po.pdf"):
+    """
+    Downloads a PDF from Google Drive using file_id and saves it locally.
+    """
+    URL = "https://docs.google.com/uc?export=download"
+
+    # Start a session to persist cookies
+    session = requests.Session()
+
+    # Initial request to get the download page
+    response = session.get(URL, params={'id': file_id}, stream=True)
+
+    # Try to extract confirmation token if present
+    token = get_confirm_token(response)
+
+    # If a token was found, request the file with confirmation
+    if token:
+        response = session.get(URL, params={'id': file_id, 'confirm': token}, stream=True)
+
+    # Check if the final response is successful
+    if response.status_code == 200:
+        with open(save_path, "wb") as f:
+            for chunk in response.iter_content(32768):  # Download in chunks
+                if chunk:
+                    f.write(chunk)
+        print(f"[INFO] File downloaded and saved to: {save_path}")
+        return save_path
+    else:
+        raise Exception("Failed to download PDF. Check if file is public or if ID is correct.")
+
 # API endpoint
 # Endpoint to process extracted text directly via POST request
-@app.route('/process_text', methods=['POST'])
-def process_text_input():
-    # Accept JSON input: {"extracted_text": "..."}
-    request_data = request.get_json()
-    extracted_text = request_data.get('extracted_text', '')
+@app.route('/process', methods=['POST'])
+def process_po_from_gdrive():
+    try:
+        # Get JSON data from POST request
+        request_data = request.get_json()
 
-    if not extracted_text:
-        return jsonify({"error": "Missing 'extracted_text' in request"}), 400
+        # Extract 'file_id' key from the JSON payload
+        file_id = request_data.get('file_id')
 
-    # Use the extracted text directly instead of PDF parsing
-    raw_text = extracted_text
+        # Validate presence of file_id
+        if not file_id:
+            return jsonify({"error": "Missing 'file_id' in request"}), 400
 
-    # Extract context after total value keywords
-    total_context = extract_total_value_context(raw_text)
-    print("[DEBUG] Total Amount Context:")
-    print(total_context)
+        # Format Google Drive download URL
+        google_drive_url = f"https://drive.google.com/uc?export=download&id={file_id}"
 
-    # Consolidate line items
-    processed_text = consolidate_line_items(raw_text)
+        # Download the PDF from Google Drive
+        pdf_path = download_pdf_from_google_drive(google_drive_url)
 
-    # Use only parser agent
-    parser_agent = create_agents()
+        # Extract raw text from the downloaded PDF
+        raw_text = extract_text_from_pdf(pdf_path)
 
-    print("running parse task")
+        # Extract amount-related context
+        total_context = extract_total_value_context(raw_text)
+        print("[DEBUG] Total Amount Context:")
+        print(total_context)
 
-    # Convert Pydantic schema to JSON schema for prompting
-    purchase_order_dict = PurchaseOrder.model_json_schema()
-    purchase_order_json = json.dumps(purchase_order_dict, indent=2).replace('{', '{{').replace('}', '}}')
+        # Merge and clean PO line item section
+        processed_text = consolidate_line_items(raw_text)
+
+        # Create the parser agent
+        parser_agent = create_agents()
+
+        print("Running parse task")
+
+        # Convert Pydantic model schema to JSON schema string for prompt injection
+        purchase_order_dict = PurchaseOrder.model_json_schema()
+        purchase_order_json = json.dumps(purchase_order_dict, indent=2).replace('{', '{{').replace('}', '}}')
 
     # Define parsing task
     parse_task = Task(
@@ -410,39 +459,43 @@ def process_text_input():
         expected_output="Strict JSON output matching PurchaseOrder schema with additional metadata where applicable"
     )
 
-    # Run CrewAI parser task
-    crew = Crew(agents=[parser_agent], tasks=[parse_task], process=Process.sequential)
-    parse_output = crew.kickoff()
-    parsed_data = json.loads(clean_json(parse_output.raw))
+        # Run CrewAI parsing task
+        crew = Crew(agents=[parser_agent], tasks=[parse_task], process=Process.sequential)
+        parse_output = crew.kickoff()
 
-    # Save initial parsed output
-    import os
-    os.makedirs("results", exist_ok=True)
-    with open("results/parsed_data.txt", "w") as file:
-        json.dump(parsed_data, file, indent=4)
+        # Clean LLM response and load it as dictionary
+        parsed_data = json.loads(clean_json(parse_output.raw))
 
-    # Iteration and validation loop
-    iteration, max_iterations, final_output = 0, 1, None
+        # Save parser output to local file (optional)
+        os.makedirs("results", exist_ok=True)
+        with open("results/parsed_data.txt", "w") as file:
+            json.dump(parsed_data, file, indent=4)
 
-    while iteration < max_iterations:
-        validation = hard_validate(parsed_data)
-        print("\n[DEBUG] Validation Result (After Parser):")
-        with open("results/validation_data.txt", "w") as file:
-            json.dump(validation.data, file, indent=4)
-        print(json.dumps(validation.data, indent=2))
+        # Validation iteration logic
+        iteration, max_iterations, final_output = 0, 1, None
 
-        # Only parser and hard validator logic is active
-        final_output = validation
-        break
+        while iteration < max_iterations:
+            validation = hard_validate(parsed_data)
+            print("\n[DEBUG] Validation Result (After Parser):")
+            with open("results/validation_data.txt", "w") as file:
+                json.dump(validation.data, file, indent=4)
+            print(json.dumps(validation.data, indent=2))
 
-    # Final schema validation check
-    try:
-        PurchaseOrder(**final_output.data)
-        final_output.errors.append("Final schema validation passed")
-    except (ValidationError, json.JSONDecodeError, ValueError) as e:
-        final_output.errors.append(f"Schema validation failed: {str(e)}")
+            final_output = validation
+            break
 
-    return jsonify(final_output.data), 200
-    
+        # Pydantic schema validation
+        try:
+            PurchaseOrder(**final_output.data)
+            final_output.errors.append("Final schema validation passed")
+        except (ValidationError, json.JSONDecodeError, ValueError) as e:
+            final_output.errors.append(f"Schema validation failed: {str(e)}")
+
+        # Return structured validated output to Postman
+        return jsonify(final_output.data), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == "__main__":
     app.run(debug=True)
