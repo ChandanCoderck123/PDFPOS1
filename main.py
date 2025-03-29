@@ -184,6 +184,9 @@ def hard_validate(data: Dict[str, Any]) -> ValidatedOutput:
             item['unit_price_incl_tax'] = unit_price_gst
             continue
 
+        # Validation failed, but we won’t count EAN-only issues here
+        faulty_indices_step1.add(idx)
+        
         # Still not valid — log the issue
         errors.append(
             f"""
@@ -196,7 +199,6 @@ def hard_validate(data: Dict[str, Any]) -> ValidatedOutput:
             Suggestion: Let the Corrector Agent re-evaluate this using semantic cues and domain rules from Indian POs.
             """
         )
-        faulty_indices_step1.add(idx)  # Mark item as failed after correction attempt
 
         # EAN validation logic (excluded from accuracy calculation)
         raw_ean = item.get('ean', '').strip()
@@ -372,9 +374,9 @@ def process_text_input():
 
         ### MANDATORY RULES:
         1. **Primary ID (product_id) Hierarchy**: 
-            - 'Use "Material Code" if available (e.g., 4000000xxxx)' or 'use "Article No" if Available (e.g., 14000xxxx)' for "product_id".
+            - 'Use "Material Code" if available (e.g., 4000000xxxx)' or 'use "Article No" if Available (e.g., 14000xxxx)' for "product_id" or 'use "SKU code" if available without taking any space for "product_id"'.
             - Else fallback to **EAN** (13 digit numeric) for "product_id". If `ean` has space-separated parts like `88061825571 25`, extract only the **13-digit valid code** like '8806182557125'.
-        2. **HSN Code**: Mandatory 4 to 8-digit HSN code (e.g., 33049910, 34013090).
+        2. **HSN Code**: Mandatory 4 to 8-digit HSN code (e.g., 33049910, 34013090). Take without any space like '33041000' if '33041 000'.
         3. **Product Description**: Merge multi-line descriptions into one line (handle wrapped text in PDFs).
         4. **Buyer Information**: Extract GSTIN (Don't extract this "GSTIN: 27AAKCM9228M1ZR", other than this string "27AAKCM9228M1ZR" you can pick for GSTIN ), PAN, Company Name, Billing & Shipping Address.
         5. **Total Amounts** or **order_total_amount_incl_tax**: Validate against "Total(INR)" or "Grand Total(INR)" in the PO. Total value shall be inclusive GST and it is most highest amount or Value in the PO data.
@@ -385,12 +387,13 @@ def process_text_input():
             - Cosmetics: ₹50 to ₹4000.
         10. For each line item:
             - Extract and label only the "Unit Price (landed Price)" or "Selling Price" under the key "unit_price_incl_tax".
-            - Extract `qty`, qty is a numeric value. ensure you pick right quantity incoherence with item total.
-            - 'line_total (Invoice value)' is usually the last value in the line; if qty > 1, it's the highest value, and if qty == 1, it's the second highest.
+            - Extract `qty`, qty is a numeric value. ensure you pick right quantity incoherence with item total. If you have "total_line_items"== 1, then 'qty' must not be 1 unless 1 is explicitly written as the quantity (e.g., near a product name or EAN).
             - 'ean', 'hsn_code', and 'description' must be extracted accurately and distinctly, ensuring no overlap or mixing of values.
             - DO NOT extract or use MRP, base price, or other irrelevant prices in calculations strictly with followed by condition.
             - Validate EAN, and HSN formats per Indian norms.
-        11.This is must. I need atleast 4 values here. For each line item in the input text extract values which look '^\d{{1,4}}.\d{{2}}$' or '^\d{{1,4}}$' pick them and store them to line_item_details array. for each line and tag each value as item1, item2, item3, item4, item5... atlest extract 3 values. pick all possible value, if there is no value fill with zero.
+        11. This is must. I need atleast 4 values here. For each line item in the input text extract values which look '^\d{{1,4}}.\d{{2}}$' or '^\d{{1,4}}$' pick them and store them to line_item_details array. for each line and tag each value as item1, item2, item3, item4, item5... atlest extract 3 values. pick all possible value, if there is no value fill with zero.
+        12. **total_item_qty_in_units** will be always "sum of 'qty' of each line item".
+        13. Number of "total_line_items" will always depends on uniqueness of Primary id (product_id) and product_name (Product Description)
 
         ### BUSINESS CONTEXT:
             - Indian PO conventions from sectors like FMCG, beauty products, and retail.
