@@ -417,8 +417,8 @@ def process_po_from_gdrive():
         purchase_order_dict = PurchaseOrder.model_json_schema()
         purchase_order_json = json.dumps(purchase_order_dict, indent=2).replace('{', '{{').replace('}', '}}')
 
-    # Define parsing task
-    parse_task = Task(
+        # Define parsing task
+        parse_task = Task(
         description=f"""Extract and normalize Indian Purchase Order data.
 
         ### MANDATORY RULES:
